@@ -40,7 +40,7 @@ def setup_seed(seed):
 
     return seed
 
-def get_logger(filename, verbosity=1, name=None):
+def get_logger(filename, perf_filename, args, verbosity=1, name=None):
     level_dict = {0: logging.DEBUG, 1: logging.INFO, 2: logging.WARNING}
 
     # 로그 출력 형식
@@ -50,17 +50,30 @@ def get_logger(filename, verbosity=1, name=None):
     logger = logging.getLogger(name)
     logger.setLevel(level_dict[verbosity])
 
-    # 로그를 파일로 보낼 준비
-    fh = logging.FileHandler(filename, "w")
-    fh.setFormatter(formatter)
-    logger.addHandler(fh)
+    perf_formatter = logging.Formatter("%(message)s")
+    perf_logger = logging.getLogger("perf_logger")
+    perf_logger.setLevel(logging.INFO)
+    perf_logger.propagate = False       
 
     # 로그를 터미널 출력으로 보낼 준비
     sh = logging.StreamHandler()
     sh.setFormatter(formatter)
     logger.addHandler(sh)
 
-    return logger
+    # 로그를 파일로 보낼 준비 (학습 및 추론때만)
+    if args.vis == 0:
+        l_fh = logging.FileHandler(filename, "w")
+        l_fh.setFormatter(formatter)
+        logger.addHandler(l_fh)
+
+        if os.path.exists(perf_filename):
+            perf_logger = None
+        else:
+            p_fh = logging.FileHandler(perf_filename, "w")
+            p_fh.setFormatter(perf_formatter)
+            perf_logger.addHandler(p_fh)
+
+    return logger, perf_logger
 
 def print_args(logger, args):
     logger.info('--------args----------')
@@ -167,8 +180,21 @@ def train(args):
     if not os.path.exists(args.result_dir):
         os.makedirs(args.result_dir)
 
+    prompt_path = os.path.join(args.weight_path, "{}_prompt.pt".format(args.dataset))
+    adaptor_path = os.path.join(args.weight_path, "{}_adaptor.pt".format(args.dataset))
+    exist_weight = os.path.exists(prompt_path) and os.path.exists(adaptor_path)
+
+    if exist_weight:
+        mode = 'test'
+    else:
+        mode = 'train'
+
     # log 저장
-    logger = get_logger(os.path.join(args.result_dir, '{}_{}_s{}.txt'.format(args.dataset, args.fewshot, args.seed)))
+    logger, perf_logger = get_logger(
+        filename=os.path.join(args.result_dir, '{}_log_{}.txt'.format(mode, args.dataset)),
+        perf_filename=os.path.join(args.result_dir, 'performance_{}.txt'.format(args.dataset)),
+        args=args
+    )
     print_args(logger, args)
 
     # =============================================================== #
@@ -192,24 +218,24 @@ def train(args):
     # 기존 CLIP에 새로운 모듈 Adaptor와 Prompt를 삽입
     clip_model.insert(args=args, tokenizer=tokenize, device=device)
 
-    calcul_flops(model=clip_model, args=args)
-    calcul_params(model=clip_model)
+    # calcul_flops(model=clip_model, args=args)
+    # calcul_params(model=clip_model)
+    print(f"*** current device  : {device}")
+    print(f"*** using dataset   : {args.dataset_list}")
     # =============================================================== #
 
     train_dataset, test_dataset_dict = load_dataset(args, clip_transform, target_transform)
     train_dataloader = torch.utils.data.DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
-
-    prompt_path = os.path.join(args.weight_path, "{}_prompt.pt".format(args.dataset))
-    adaptor_path = os.path.join(args.weight_path, "{}_adaptor.pt".format(args.dataset))
     
     # Adaptor, Prompt 가중치가 존재하는 경우
-    if os.path.exists(prompt_path) and os.path.exists(adaptor_path):
+    if exist_weight:
         clip_model.state_prompt_embedding = torch.load(
             prompt_path, map_location=torch.device('cpu'), weights_only=False
         )
         clip_model.adaptor = torch.load(
             adaptor_path, map_location=torch.device('cpu'), weights_only=False
         )
+        clip_model = clip_model.to(device)
     # 가중치 없는 경우 → 어댑터, 프롬프트 파인튜닝
     else:
         optimizer = torch.optim.Adam(clip_model.get_trainable_parameters(), lr=args.lr, betas=(0.5, 0.999))
@@ -246,7 +272,7 @@ def train(args):
 
     for dataset_name, test_ds in test_dataset_dict.items():
         logger.info("---------------------------{}------------------------------".format(dataset_name))
-        eval_all_class(clip_model, dataset_name, test_ds, args, logger, device)
+        eval_all_class(clip_model, dataset_name, test_ds, args, logger, perf_logger, device)
         logger.info("-------------------------------------------------------------")
 
       
@@ -275,7 +301,8 @@ if __name__ == '__main__':
     parser.add_argument('--fewshot', type=int, default=0, help='few shot num')
     parser.add_argument('--suffix', type=str, default='defect', help='prompt suffix')
     parser.add_argument('--feature_layers', nargs='+', type=int, default=[6, 12, 18, 24], help='choose vit layers to extract features')
-    
+    parser.add_argument('--test_dataset', nargs='+', type=str, default=[], help='choose vit layers to extract features')
+
     args = parser.parse_args()
     
     args.seed = setup_seed(args.seed)

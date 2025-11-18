@@ -243,7 +243,7 @@ def evaluation_pixel(clip_model:CLIP, dataset_name, dataloader, args, device):
         if dataset_name not in ['isic', 'clinic', 'colon', 'kvasir', 'endo']:                
             sample_gt_list = np.concatenate(sample_gt_list)
             sample_score_list = np.concatenate(sample_score_list)
-            res['Sample_CLS'] = calculate_metrics(sample_score_list, sample_gt_list)
+            res['Image'] = calculate_metrics(sample_score_list, sample_gt_list)
         if dataset_name not in ['br35h', 'brainmri', 'headct']:
             pixel_gt_list = np.concatenate(pixel_gt_list)
             pixel_score_list = np.concatenate(pixel_score_list)
@@ -258,7 +258,7 @@ def evaluation_pixel(clip_model:CLIP, dataset_name, dataloader, args, device):
             
     return res
 
-def eval_all_class(clip_model: CLIP, dataset_name, test_dataset, args, logger, device):
+def eval_all_class(clip_model: CLIP, dataset_name, test_dataset, args, logger, perf_logger, device):
     total_res = []
     if args.fewshot > 0:
         fewshot_dataset = copy.deepcopy(test_dataset)
@@ -270,6 +270,8 @@ def eval_all_class(clip_model: CLIP, dataset_name, test_dataset, args, logger, d
     # =============================================================== #
     if args.vis == 0:
         logger.info(get_header_str())
+        if perf_logger is not None:
+            perf_logger.info(get_header_str())
 
     for category in test_dataset.categories:
         # logger.info(f"======== Processing Category: {category} ========") # 이 줄은 이제 탭 형식에 방해가 되므로 주석 처리하거나 삭제
@@ -293,28 +295,48 @@ def eval_all_class(clip_model: CLIP, dataset_name, test_dataset, args, logger, d
         else:
             category_res = evaluation_pixel(clip_model, dataset_name, test_dataloader, args, device)
             total_res.append(category_res)
-            
-            # =============================================================== #
-            # [수정 2] 카테고리별 결과를 탭(tab)으로 구분하여 로깅합니다.
-            # =============================================================== #
-            res_values_str = get_res_values_str(category_res)
-            # "{카테고리명}\t{값1}\t{값2}\t..." 형식으로 출력됩니다.
-            logger.info(f"{category}\t{res_values_str}")
+
+            log_message = (
+                f"{category:<12} "
+                f"{(category_res['Image']['AUROC'] * 100):<10.2f} "
+                f"{(category_res['Image']['AP'] * 100):<10.2f} "
+                f"{(category_res['Image']['max-F1'] * 100):<10.2f} "
+                f"{(category_res['Pixel']['AUROC'] * 100):<10.2f} "
+                f"{(category_res['Pixel']['AP'] * 100):<10.2f} "
+                f"{(category_res['Pixel']['max-F1'] * 100):<10.2f} "
+            )
+
+            logger.info(log_message)
+            if perf_logger is not None:
+                perf_logger.info(log_message)
 
     if args.vis == 0:
         average_res = cal_average_res(total_res)
         
-        # =============================================================== #
-        # [수정 3] 평균(Average) 결과도 탭(tab)으로 구분하여 로깅합니다.
-        # =============================================================== #
-        average_res_str = get_res_values_str(average_res)
+        log_message = (
+            f"{'Average':<12}"
+            f"{(average_res['Image']['AUROC'] * 100):^12.2f} "
+            f"{(average_res['Image']['AP'] * 100):^12.2f} "
+            f"{(average_res['Image']['max-F1'] * 100):^12.2f} "
+            f"{(average_res['Pixel']['AUROC'] * 100):^12.2f} "
+            f"{(average_res['Pixel']['AP'] * 100):^12.2f} "
+            f"{(average_res['Pixel']['max-F1'] * 100):^12.2f} "
+        )
+
         logger.info("=============================================================")
-        logger.info("{}\t\t{}".format("Average", average_res_str))
+        logger.info(log_message)
+        if perf_logger is not None:
+            perf_logger.info(log_message)
         logger.info("=============================================================")
+
+def get_header_str():
+    return (
+        f"{'Category':<12} "
+        f"{'I_AUROC':<10} {'I_AP':<10} {'I_F1':<10} "
+        f"{'P_AUROC':<10} {'P_AP':<10} {'P_F1':<10}"
+    )
 
 def load_dataset(args, clip_transform, target_transform):
-    print(args.dataset_list)
-
     all_test_dataset_dict = {}
 
     # Industrial dataset
@@ -370,53 +392,3 @@ def load_dataset(args, clip_transform, target_transform):
         train_dataset = test_dataset_visa
 
     return train_dataset, test_dataset_dict
-
-def get_header_str():
-    """탭으로 구분된 헤더 문자열을 반환합니다."""
-    headers = [
-        "Category",
-        "Sample_CLS_AUROC", "Sample_CLS_AP", "Sample_CLS_max-F1",
-        "Pixel_AUROC", "Pixel_AP", "Pixel_max-F1", "Pixel_PRO"
-    ]
-    # '\t' (탭)으로 각 항목을 연결합니다.
-    return "\t".join(headers)
-
-def get_res_values_str(metrics):
-    """
-    탭으로 구분된 결과 "값" 문자열을 반환합니다.
-    metrics 딕셔너리에서 값을 안전하게 추출합니다.
-    """
-    
-    def safe_get(metrics_dict, key1, key2):
-        """
-        중첩된 딕셔너리에서 값을 안전하게 가져옵니다.
-        키가 없으면 'N/A'를 반환합니다.
-        """
-        if key1 not in metrics_dict:
-            return "N/A"
-        if key2 not in metrics_dict[key1]:
-            # 'PRO'는 'Pixel' 딕셔너리에만 있으므로 특별 처리
-            if key1 == "Pixel" and key2 == "PRO":
-                return "N/A"
-            return "N/A"
-        
-        # 값이 숫자일 경우에만 포맷팅
-        value = metrics_dict[key1][key2]
-        if isinstance(value, (int, float)):
-            return "{:.6f}".format(value)
-        return str(value) # 숫자가 아닌 경우(드물지만)
-
-    # get_header_str 함수와 정확히 동일한 순서로 값을 가져옵니다.
-    values = [
-        safe_get(metrics, "Sample_CLS", "AUROC"),
-        safe_get(metrics, "Sample_CLS", "AP"),
-        safe_get(metrics, "Sample_CLS", "max-F1"),
-        
-        safe_get(metrics, "Pixel", "AUROC"),
-        safe_get(metrics, "Pixel", "AP"),
-        safe_get(metrics, "Pixel", "max-F1"),
-        safe_get(metrics, "Pixel", "PRO")
-    ]
-    
-    # '\t' (탭)으로 각 값을 연결합니다.
-    return "\t".join(values)

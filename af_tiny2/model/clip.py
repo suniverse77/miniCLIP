@@ -6,7 +6,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from .adaptor import Adaptor
+from .adaptor import Adaptor, CNN_Adaptor
 from .resnet import ModifiedResNet
 from .transformer import Transformer, VisionTransformer, LayerNorm
 
@@ -125,7 +125,8 @@ class CLIP(nn.Module):
         self.state_prompt_embedding.requires_grad_(True)
         
         # Adaptor 모듈 생성
-        self.adaptor =  Adaptor(inplanes=self.visual.proj.shape[0], outplanes=self.visual.proj.shape[0]).to(device)
+        self.adaptor = Adaptor(inplanes=self.visual.proj.shape[0], outplanes=self.visual.proj.shape[0]).to(device)
+        self.cnn_adaptor =  CNN_Adaptor(in_dim=1024, out_dim=1024).to(device)
         self.memorybank = None
         self.memory_backbone = None
         self.gaussian_kernel = {'3': gaussian_kernel(size=3, sigma=4).to(device), '5': gaussian_kernel(size=5, sigma=4).to(device)}
@@ -179,17 +180,23 @@ class CLIP(nn.Module):
     
     def aggerate_neighbors(self, img_tokens):
         img_token_list = []
+
         for img_token in img_tokens:
             for r in [1, 3, 5]:
-                new_img_token = self.aggerate_neighbor(img_token, r)
+                new_img_token = img_token + self.cnn_adaptor(img_token, r=r)
                 img_token_list.append(new_img_token)
+
         return img_token_list
     
     
     def detect_encode_image(self, image, args):
-        img_tokens = self.encode_image(image, args.feature_layers) 
+        # 추출한 feature 개수 * [B, N, D]
+        img_tokens = self.encode_image(image, args.feature_layers)
+
         img_tokens = self.aggerate_neighbors(img_tokens)
+
         img_tokens = [self.visual.ln_post(self.adaptor(img_token)) @ self.visual.proj for img_token in img_tokens]
+
         return img_tokens
     
     

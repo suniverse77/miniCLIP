@@ -173,7 +173,6 @@ def load_model(path, args, device):
 
     return model.eval(), _transform(model.visual.input_resolution)
     
-
 def train(args):
     device = "cuda" if torch.cuda.is_available() else "cpu"
 

@@ -1,9 +1,11 @@
 from inspect import isfunction
-import math
-import torch
-import torch.nn.functional as F
-from torch import nn, einsum
 from einops import rearrange, repeat
+
+import torch
+import torch.nn as nn
+from torch import nn, einsum
+import torch.nn.functional as F
+
 
 class GEGLU(nn.Module):
     def __init__(self, dim_in, dim_out):
@@ -109,5 +111,35 @@ class Adaptor(nn.Module):
     def forward(self, img_token):
         return self.attention(img_token)
         
+class CNN_Adaptor(nn.Module):
+    def __init__(self, in_dim=1024, out_dim=1024):
+        super(self).__init__()
+
+        middle_dim = int(in_dim // 2)
+
+        self.conv3 = nn.Sequential(
+            nn.Conv2d(in_channels=in_dim, out_channels=middle_dim, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(in_channels=middle_dim, out_channels=middle_dim, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(in_channels=middle_dim, out_channels=out_dim, kernel_size=3, padding=1),
+            nn.ReLU(),            
+        )
+
+        self.conv5 = nn.Sequential(
+            nn.Conv2d(in_channels=in_dim, out_channels=middle_dim, kernel_size=5, padding=2),
+            nn.ReLU(),
+            nn.Conv2d(in_channels=middle_dim, out_channels=middle_dim, kernel_size=5, padding=2),
+            nn.ReLU(),
+            nn.Conv2d(in_channels=middle_dim, out_channels=out_dim, kernel_size=5, padding=2),
+            nn.ReLU(),            
+        )
     
+    def forward(self, img_token, r):
+        if r == 3:
+            out = self.conv3(img_token)
+        elif r == 5:
+            out = self.conv5(img_token)
+
+        return out
     
